@@ -192,17 +192,26 @@ REPL (USB CDC-ACM, `idVendor=0x2e8a` "Pimoroni", `idProduct=0x1102` "Pimoroni Bl
   runtime level**, confirmed (`OSError: 30` / EROFS on both `mkdir` and
   plain file `open(..., 'w')`), even though `os.statvfs('/system')` reports
   plenty of free space. It **is** writable via USB mass-storage — confirmed
-  end-to-end on 2026-10-01. The badge exposes a mass-storage drive (labeled
-  `BLINKY`, ~13MB, vfat) automatically whenever it's plugged in, with no
-  `rp2.enable_msc()` call needed — it runs concurrently alongside the serial
-  CDC-ACM REPL as part of the normal composite USB device (3 interfaces).
-  The drive's root **is** `/system`: `BLINKY/apps/<name>/` ≡
-  `/system/apps/<name>/`, `BLINKY/secrets.py` ≡ `/system/secrets.py`, etc.
-  Writes made this way are visible to the device's own runtime (`os.listdir`)
-  immediately after unmount, no reboot needed to be *seen* — but the
-  **on-device menu caches its app list at menu startup**, so a reboot (or at
-  least relaunching the menu app) is needed before a newly-added app
-  actually appears in the menu UI.
+  end-to-end on 2026-10-01, repeatedly. The badge exposes a mass-storage
+  drive (labeled `BLINKY`, ~13MB, vfat) that maps directly to `/system`:
+  `BLINKY/apps/<name>/` ≡ `/system/apps/<name>/`, `BLINKY/secrets.py` ≡
+  `/system/secrets.py`, etc.
+  - **This requires "Disk Mode"**, a toggle in the badge's own on-device
+    menu (reachable via `BUTTON_HOME`) — it is **not** automatic and does
+    **not** persist across a reset/power-cycle; it must be re-enabled from
+    the physical device each time. (An earlier note in this file claiming
+    MSC "just works" with no `rp2.enable_msc()` call was wrong — the badge
+    happened to still be in Disk Mode from prior testing at the time.)
+  - The host-side block device can go stale (reports 0 bytes, won't mount)
+    after the badge resets while a host had it mounted — observed needing
+    either a full USB unplug/replug, or re-toggling Disk Mode on the
+    device, to recover. Check `lsblk` for a nonzero `SIZE` before trusting
+    the mount.
+  - Writes made this way are visible to the device's own runtime
+    (`os.listdir`) immediately after unmount, no reboot needed to be
+    *seen* — but the **on-device menu caches its app list at menu
+    startup**, so a reboot (or at least relaunching the menu app) is
+    needed before a newly-added app actually appears in the menu UI.
 - `/` (root) **is writable** from the REPL/runtime (`os.mkdir('/apps')`
   succeeded) — but the gatekeeper/menu doesn't look here, so anything placed
   under `/apps/...` won't show up in the on-device menu. It's reachable only
@@ -217,6 +226,55 @@ auto-reset behavior) — this caused the badge to repeatedly re-enumerate
 across separate tool invocations during development. Fix: `stty -F
 /dev/ttyACM0 ... -hupcl clocal` before opening the port keeps the board
 (and its running app) alive across disconnect/reconnect.
+
+A udev rule is the better permanent fix for the related permissions
+annoyance (`/dev/ttyACM0` defaulting to `root:uucp`, needing `sudo chmod
+666` after every re-enumeration):
+
+```
+# /etc/udev/rules.d/99-pimoroni-blinky.rules
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="1102", MODE="0666"
+```
+
+then `sudo udevadm control --reload-rules && sudo udevadm trigger` and
+replug once. Confirmed working — permissions apply automatically on every
+subsequent re-enumeration with no manual step.
+
+## DO NOT use `machine.WDT` on this device
+
+**Confirmed live and painful, 2026-10-01**: `machine.WDT(timeout=8000)`
+successfully arms a hardware watchdog - but on this chip, an **unfed
+watchdog survives a normal software/hardware reset** and keeps forcing the
+chip to reboot on the configured interval indefinitely. A soft reset,
+`machine.reset()`, or even the badge's own crash-recovery path does **not**
+clear it. The only recovery that worked was a **full physical power-cycle**
+(unplug USB completely for ~10s, replug) - which power-cycles the watchdog
+peripheral itself.
+
+This makes `machine.WDT` unsafe to use from any single app on this badge:
+the watchdog is a chip-global resource, not scoped to the app that armed
+it. If one app starts a watchdog and the user then switches to a
+*different* app (or the menu) that never calls `.feed()`, that unrelated
+app would mysteriously reboot partway through, with no indication why. Do
+not reach for a watchdog as a hang-mitigation strategy here without a much
+more thorough understanding of this firmware's boot-time WDT handling than
+currently exists.
+
+## Display only flips once per completed `update()` call
+
+Confirmed live, 2026-10-01: drawing to `screen` and then performing a
+**blocking** operation (e.g. `urequests.get()`) *within the same*
+`update()` call never shows the drawing on the physical LED matrix - the
+blocking call runs out the clock before that frame is ever flushed to the
+display. The framebuffer only appears to actually flip once `update()`
+returns (handled by the `run()` wrapper).
+
+Practical implication: any "loading"/status indicator that needs to be
+visible *during* a blocking call must be drawn on one frame, which then
+`return`s immediately (no blocking work that frame) so the display gets a
+chance to render it - with the actual blocking work deferred to the
+following frame. See the `_poll_pending` state machine in
+`apps/skol_display/__init__.py` for a working example of this pattern.
 
 ## Open / unconfirmed
 
