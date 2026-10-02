@@ -312,10 +312,11 @@ _game_state = None
 _last_poll_ms = -POLL_INTERVAL_MS
 _anim_index = 0
 _last_anim_switch_ms = 0
+_poll_pending = False
 
 
 def update():
-    global _anim_index, _last_anim_switch_ms, _game_state, _last_poll_ms
+    global _anim_index, _last_anim_switch_ms, _game_state, _last_poll_ms, _poll_pending
 
     if badge.pressed(BUTTON_A):
         _settings["animations_enabled"] = not _settings["animations_enabled"]
@@ -328,9 +329,26 @@ def update():
     # its own connection failures (returns None), so gating here just adds
     # a second, redundant way for the fetch to silently never happen.
     now = badge.ticks
-    if now - _last_poll_ms >= POLL_INTERVAL_MS:
+
+    if _poll_pending:
+        # The previous frame already painted "SYNC" and returned, so the
+        # display has had a chance to actually render it (confirmed on
+        # hardware: drawing a status message and then blocking in the SAME
+        # update() call never showed anything, because the framebuffer only
+        # flips once update() returns - the blocking call ran out the clock
+        # before the frame ever reached the screen). Now that a full frame
+        # has rendered with SYNC on it, it's safe to do the actual blocking
+        # fetch_game_state() call.
+        _poll_pending = False
         _last_poll_ms = now
         _game_state = fetch_game_state()
+    elif now - _last_poll_ms >= POLL_INTERVAL_MS:
+        _poll_pending = True
+        screen.pen = color.black
+        screen.clear()
+        screen.font = rom_font.desert
+        _draw_static_text("SYNC", int((SCREEN_H - 10) / 2), DIM)
+        return
 
     is_live = bool(_game_state and _game_state.get("state") == "in")
 
