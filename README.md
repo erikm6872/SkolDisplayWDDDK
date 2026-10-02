@@ -40,6 +40,14 @@ game (none was in progress during development — verified by mocking
 `fetch_game_state()` to confirm the live-score rendering path instead; see
 git history for that throwaway test harness).
 
+**Open caveat**: whether the badge auto-sleeps (pausing `update()` calls
+entirely) after a long period with no button presses was never confirmed
+either way. If it does, a background daily check wouldn't fire while
+asleep, undermining the "leave it plugged in, check once a day" goal this
+polling scheme is built for. Worth observing over the next day or two to
+confirm it actually comes back with a live score (or at least attempts a
+check) without anyone touching it.
+
 ## Confirmed quirks worth knowing
 
 - **The display is monochrome** — white LEDs, brightness only, no hue. An
