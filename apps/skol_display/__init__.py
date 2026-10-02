@@ -266,13 +266,42 @@ def fetch_game_state():
     }
 
 
-def format_score_text(game_state):
-    parts = ["{} {}".format(s["abbr"], s["score"]) for s in game_state["scores"]]
-    text = "  -  ".join(parts) if parts else "VIKINGS"
+def format_score_lines(game_state):
+    lines = ["{} {}".format(s["abbr"], s["score"]) for s in game_state["scores"]]
+    return lines or ["VIKINGS"]
+
+
+def format_clock_text(game_state):
     period, clock = game_state.get("period"), game_state.get("clock")
-    if period and clock:
-        text += "   Q{} {}".format(period, clock)
-    return text
+    return "Q{} {}".format(period, clock) if period and clock else "LIVE"
+
+
+# A full "MIN 17 - GB 14   Q3 8:42" line doesn't fit the 39px-wide screen in
+# any available font without scrolling (measured: even the most compact ROM
+# font, "desert", needs ~61px for team abbreviations + scores alone). Rather
+# than scroll, show two static pages and toggle between them: team scores
+# stacked two lines tall, then the quarter/clock - each one fits statically
+# in "desert" (10px glyph height, narrow enough per line/string to stay
+# under 39px at these string lengths).
+SCORE_PAGE_SWITCH_MS = 4 * 1000
+LIVE_LINE_HEIGHT = 10
+LIVE_LINE_GAP = 2
+
+
+def draw_live_score(game_state):
+    screen.font = rom_font.desert
+    showing_scores = (badge.ticks // SCORE_PAGE_SWITCH_MS) % 2 == 0
+
+    if showing_scores:
+        lines = format_score_lines(game_state)
+        total_h = len(lines) * LIVE_LINE_HEIGHT + (len(lines) - 1) * LIVE_LINE_GAP
+        y = int((SCREEN_H - total_h) / 2)
+        for line in lines:
+            _draw_static_text(line, y, BRIGHT)
+            y += LIVE_LINE_HEIGHT + LIVE_LINE_GAP
+    else:
+        y = int((SCREEN_H - LIVE_LINE_HEIGHT) / 2)
+        _draw_static_text(format_clock_text(game_state), y, BRIGHT)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -307,9 +336,13 @@ def update():
 
     screen.pen = color.black
     screen.clear()
+    # Reset to the default font every frame - draw_live_score() switches to
+    # a more compact font for its own draws, and without resetting here that
+    # would otherwise leak into the idle states on the frame after a game ends.
+    screen.font = rom_font.smart
 
     if is_live:
-        draw_scrolling_text(format_score_text(_game_state), TEXT_Y, BRIGHT)
+        draw_live_score(_game_state)
     elif _settings["animations_enabled"]:
         if now - _last_anim_switch_ms >= ANIM_SWITCH_MS:
             _anim_index = (_anim_index + 1) % len(IDLE_ANIMATIONS)

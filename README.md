@@ -10,9 +10,13 @@ and the on-device "badgeware" app framework this project targets.
 
 Three states in `apps/skol_display/__init__.py`:
 
-1. **Vikings playing** — scrolls the live score and quarter/clock (e.g.
-   `MIN 17  -  GB 14   Q3 8:42`), polled every 30s from ESPN's public team
-   endpoint (`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min`,
+1. **Vikings playing** — toggles between two static pages every 4s: team
+   scores stacked two lines tall (e.g. `MIN 17` / `GB 14`), then the
+   quarter/clock (e.g. `Q3 8:42`). No scrolling — a full score+clock line
+   doesn't fit the 39px-wide screen in any available font, so it's split
+   across pages instead of scrolled. Game data polled every 30s from ESPN's
+   public team endpoint
+   (`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min`,
    no API key needed).
 2. **Not playing, animations off (default)** — static "SKOL" at medium
    brightness.
