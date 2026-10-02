@@ -6,7 +6,7 @@ Pimoroni Blinky 2350 conference badge with a 39×26 monochrome LED matrix.
 See [`docs/DEVICE_SPECS.md`](docs/DEVICE_SPECS.md) for full hardware specs
 and the on-device "badgeware" app framework this project targets.
 
-## Status: working, tested live on hardware (2026-10-01)
+## Status: working, deployed through the actual on-device menu (2026-10-01)
 
 Three states in `apps/skol_display/__init__.py`:
 
@@ -48,29 +48,43 @@ git history for that throwaway test harness).
 
 ## Deploying
 
-- `/rom/apps/...` is factory firmware, read-only at the MicroPython level.
-- `/system/apps/...` is what the on-device menu/launcher
-  (`/rom/utils/gatekeeper.py`) actually scans for user apps — but it's
-  **also read-only from the REPL** (`OSError 30`, confirmed live). It's
-  presumably writable via the badge's USB mass-storage mode
-  (`rp2.enable_msc()`) for drag-and-drop deployment from a host, but that
-  path hasn't been exercised yet.
-- `/` (root) **is** writable from the REPL, and isn't recognized by the
-  menu/gatekeeper — but `badgeware.launch(path)` can run an app from any
-  path directly, bypassing the menu. That's how this app has been
-  deployed and tested so far:
+### Real deployment: USB mass-storage drag-and-drop (confirmed working)
 
-  ```python
-  # over the serial REPL, raw-REPL mode (Ctrl-A), after writing the file
-  # to /apps/skol_display/__init__.py:
-  import badgeware
-  badgeware.launch("/apps/skol_display")
-  ```
+The badge exposes itself as a USB mass-storage drive (labeled `BLINKY`)
+*simultaneously* with its serial REPL — no special mode-switch needed, it
+shows up as soon as it's plugged in (e.g. `/run/media/$USER/BLINKY` on
+Linux). The drive's root **is** `/system` on the device:
+`BLINKY/apps/<name>/` = `/system/apps/<name>/`, which is exactly what
+`/rom/utils/gatekeeper.py` (`SYSTEM_APPS_DIR`) scans for user apps — this
+is the real deploy path, confirmed end-to-end:
 
-  This is a fine dev loop but isn't "real" end-user deployment — to make
-  the app show up in the badge's own menu, it needs to land in
-  `/system/apps/skol_display/`, which likely means the MSC drag-and-drop
-  flow (untested).
+1. Copy the app folder onto the drive: `cp -r apps/skol_display /path/to/BLINKY/apps/`
+2. **Include `icon.png`** (24×24, transparency supported) — this isn't
+   optional polish. `/rom/apps/menu/app.py`'s `Apps.__init__` only adds a
+   folder to the menu at all if `icon.png` exists alongside `__init__.py`;
+   without it the app is silently invisible, not just icon-less. Confirmed
+   live: deploying without an icon left the app completely absent from the
+   menu, with no error anywhere.
+3. Unmount/eject the drive properly (`udisksctl unmount` or your OS's
+   eject), then reboot the badge (physical reset, or `machine.reset()` over
+   the REPL) — the on-device menu builds its app list once at menu startup,
+   so changes made via USB while the menu was already running won't appear
+   until it restarts.
+
+### Dev-loop shortcut: `badgeware.launch()` over the REPL
+
+For fast iteration without needing to eject/reboot each time,
+`badgeware.launch(path)` can run an app from **any** path directly,
+bypassing the menu entirely — this is how every change in this app's
+history was tested before final menu deployment:
+
+```python
+# over the serial REPL, raw-REPL mode (Ctrl-A), after writing the file
+# to /apps/skol_display/__init__.py (note: /apps at root, NOT /system/apps -
+# root is writable from the REPL, /system is not, see DEVICE_SPECS.md):
+import badgeware
+badgeware.launch("/apps/skol_display")
+```
 
 ## Hardware access notes
 

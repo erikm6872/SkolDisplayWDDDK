@@ -169,6 +169,16 @@ REPL (USB CDC-ACM, `idVendor=0x2e8a` "Pimoroni", `idProduct=0x1102` "Pimoroni Bl
   This is the key to iterating on an app without needing the MSC/drag-and-drop
   deploy path: write the app to a writable location and launch it directly,
   bypassing the menu/gatekeeper entirely.
+- **`icon.png` is required for an app to appear in the menu at all** — not
+  just cosmetic. `/rom/apps/menu/app.py`'s `Apps.__init__` only constructs a
+  menu entry for a folder if `icon.png` exists alongside `__init__.py`
+  (`if is_dir(...) and file_exists(f"{root}/{folder}/icon.png")`); apps
+  missing it are silently absent from the menu — no error, no placeholder,
+  nothing. Confirmed live: an app deployed via MSC without an icon never
+  appeared. Icons are blitted into a 24×24 rect
+  (`screen.blit(self.icon, rect(..., 24*scale, 24*scale))`) and support
+  alpha (the menu fades the icon out via `.alpha` during launch animation),
+  so a 24×24 RGBA PNG is the right format.
 - A separate `_msc` service runs concurrently to serve the mass-storage USB mode
   and periodically updates "caselights"; it shows up in tracebacks when a REPL
   `Ctrl-C` interrupts it mid-update — harmless.
@@ -181,10 +191,18 @@ REPL (USB CDC-ACM, `idVendor=0x2e8a` "Pimoroni", `idProduct=0x1102` "Pimoroni Bl
   comment calling it "user-writable") — **read-only at the MicroPython
   runtime level**, confirmed (`OSError: 30` / EROFS on both `mkdir` and
   plain file `open(..., 'w')`), even though `os.statvfs('/system')` reports
-  plenty of free space. It's presumably writable via the USB mass-storage
-  mode (`rp2.enable_msc()`) from a host PC, which would write at the block
-  level rather than through this read-only runtime mount — **not yet
-  verified**.
+  plenty of free space. It **is** writable via USB mass-storage — confirmed
+  end-to-end on 2026-10-01. The badge exposes a mass-storage drive (labeled
+  `BLINKY`, ~13MB, vfat) automatically whenever it's plugged in, with no
+  `rp2.enable_msc()` call needed — it runs concurrently alongside the serial
+  CDC-ACM REPL as part of the normal composite USB device (3 interfaces).
+  The drive's root **is** `/system`: `BLINKY/apps/<name>/` ≡
+  `/system/apps/<name>/`, `BLINKY/secrets.py` ≡ `/system/secrets.py`, etc.
+  Writes made this way are visible to the device's own runtime (`os.listdir`)
+  immediately after unmount, no reboot needed to be *seen* — but the
+  **on-device menu caches its app list at menu startup**, so a reboot (or at
+  least relaunching the menu app) is needed before a newly-added app
+  actually appears in the menu UI.
 - `/` (root) **is writable** from the REPL/runtime (`os.mkdir('/apps')`
   succeeded) — but the gatekeeper/menu doesn't look here, so anything placed
   under `/apps/...` won't show up in the on-device menu. It's reachable only
@@ -211,9 +229,14 @@ across separate tool invocations during development. Fix: `stty -F
 - Whether `HIRES` mode exists and what resolution/color depth it offers
   (moot given the display is confirmed monochrome, but the constant may
   still affect pixel addressing/resolution).
-- Whether `/system/apps/` is actually writable via USB mass-storage mode
-  (`rp2.enable_msc()`) from a host PC — this is the presumed "real" app
-  deployment path but hasn't been tried.
+- Whether the MSC drive's "always on" behavior (no `rp2.enable_msc()` call
+  needed) is true from a cold boot too, or only because this unit still had
+  an in-progress REPL session each time it was tested.
+- Whether unplugging the USB cable (full re-enumeration) is actually
+  required to recover a "stuck" MSC block device after `machine.reset()`,
+  or whether there's a software-only fix — observed the host's block device
+  report size 0 after a REPL-triggered reset until the cable was physically
+  replugged.
 
 ## How this was gathered
 
