@@ -14,10 +14,18 @@ Three states in `apps/skol_display/__init__.py`:
    scores stacked two lines tall (e.g. `MIN 17` / `GB 14`), then the
    quarter/clock (e.g. `Q3 8:42`). No scrolling — a full score+clock line
    doesn't fit the 39px-wide screen in any available font, so it's split
-   across pages instead of scrolled. Game data polled every 30s from ESPN's
-   public team endpoint
+   across pages instead of scrolled. Game data comes from ESPN's public
+   team endpoint
    (`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min`,
-   no API key needed).
+   no API key needed), polled **adaptively** rather than on a fixed
+   interval — the app is meant to be left plugged in long-term: it checks
+   once a day when no game is imminent, and only switches to a tight 30s
+   cadence within 30 minutes of kickoff or while a game is actually live.
+   This needs real wall-clock time to know how close kickoff is, so the
+   badge syncs its clock via NTP once WiFi is reachable; if that sync has
+   never succeeded, polling just stays on the daily cadence until a game
+   is confirmed live from the API response itself (which doesn't need
+   synced time to detect).
 2. **Not playing, animations off (default)** — static "SKOL" at medium
    brightness.
 3. **Not playing, animations on** — cycles every 8s through a "SKOL"
