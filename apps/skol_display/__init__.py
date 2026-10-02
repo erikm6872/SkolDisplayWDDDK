@@ -1,167 +1,146 @@
 """SkolDisplay - Minnesota Vikings badge app for the Workday DevCon 2026
-DevKit (Pimoroni Blinky 2350). See docs/DEVICE_SPECS.md for the badgeware
-app API this relies on (`badge`, `screen`, `color`, `run`, button/mode
-constants injected as globals by the launcher at /rom/main.py).
+DevKit (Pimoroni Blinky 2350 / "badgeware" firmware).
 
 Two states:
-  - LIVE:  a Vikings game is in progress -> scroll the current score.
-  - IDLE:  no game in progress -> cycle through Vikings-themed animations.
+  - LIVE: a Vikings game is in progress -> scroll the current score.
+  - IDLE: no game in progress -> by default, shows a static "SKOL" at medium
+    brightness. Press BUTTON_A to toggle on a rotation of Vikings-themed
+    animations (off by default so they don't get annoying); the choice is
+    persisted via badgeware.State so it survives app restarts.
 
-Game data comes from ESPN's public (unofficial) team endpoint - schema
-verified by hand on 2026-10-01:
+API confirmed live on real hardware on 2026-10-01 (see docs/DEVICE_SPECS.md):
+  - Globals injected by the launcher: screen, color, rom_font, badge,
+    BUTTON_A/B/C, run, fatal_error.
+  - `screen.text(str, x, y)` draws in the currently selected `screen.font`
+    (set via `screen.font = rom_font.<name>`); `screen.measure_text(str)`
+    returns `(width, height)` as floats - index [0] drives manual scrolling
+    here (there is no built-in marquee).
+  - `screen.circle(cx, cy, r)` / `screen.line(x0, y0, x1, y1)` /
+    `screen.rectangle(x, y, w, h)` are direct filled-shape draw calls.
+  - `color.rgb(r, g, b)` plus named constants (`color.black`, etc).
+  - `badge.ticks` is a monotonically increasing ms counter, read fresh each
+    frame (matches the on-device /system/apps/weather reference app).
+  - `wifi` (plain importable module, not injected) exposes connect(),
+    is_connected(), tick() and reads credentials from /system/secrets.py
+    automatically - this app never touches secrets itself.
+
+ESPN's public team endpoint (no API key) is polled every 30s for game
+state; schema verified by hand against the live endpoint:
   https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min
-  team.nextEvent[0].competitions[0].status.type.state  -> "pre" | "in" | "post"
-  team.nextEvent[0].competitions[0].status.period / displayClock
-  team.nextEvent[0].competitions[0].competitors[].team.abbreviation / .score / .homeAway
-
-ASSUMPTIONS NOT YET VERIFIED ON HARDWARE (the badge went offline mid-build):
-  - That the badge's system WiFi (if any) is already connected by the time
-    this app runs, via `network.WLAN(network.STA_IF)`. This app does not
-    manage its own WiFi credentials - see "Open questions" in
-    docs/DEVICE_SPECS.md. If the device needs this app to initiate its own
-    connection, add that here using `secrets.py` (gitignored) for
-    WIFI_SSID / WIFI_PASSWORD.
-  - That `urequests` (or `requests`) works over HTTPS on this firmware.
-  - Pixel font legibility on real hardware (FONT_3X5 below is hand-drawn
-    and untested on the actual LED matrix).
+  -> team.nextEvent[0].competitions[0].status.type.state ("pre"/"in"/"post"),
+     .status.period / .displayClock, .competitors[].team.abbreviation / .score
 """
 
-import time
-
-badge.mode(LORES)
-
-SCREEN_W, SCREEN_H = 39, 26
+import urequests
+import wifi
+from badgeware import State
 
 VIKINGS_TEAM_ENDPOINT = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min"
-POLL_INTERVAL_MS = 30_000
-ANIM_SWITCH_MS = 8_000
+POLL_INTERVAL_MS = 30 * 1000
+ANIM_SWITCH_MS = 8 * 1000
+SCROLL_SPEED_MS = 70
 
-PURPLE = (79, 38, 131)
-GOLD = (255, 198, 47)
+# The LED matrix is monochrome (white LEDs, variable brightness only) -
+# confirmed live on 2026-10-01 after the first hue-based attempt (purple vs
+# gold) was invisible on real hardware. Everything below uses brightness
+# contrast instead of color.
+BRIGHT = color.white
+MEDIUM = color.rgb(120, 120, 120)
+DIM = color.rgb(50, 50, 50)
+
+STATE_NAME = "skol_display"
+_settings = {"animations_enabled": False}
+State.load(STATE_NAME, _settings)
+
+SCREEN_W, SCREEN_H = screen.width, screen.height
+
+screen.font = rom_font.smart
+# screen.measure_text()[1] is the glyph height for the current font (16px
+# for "smart") - used to vertically center single-line text. Measured live
+# on hardware on 2026-10-01 after an earlier hardcoded guess of 7px left
+# text sitting in the bottom half of the screen. The -3 is an empirical
+# nudge on top of that: the "smart" font's glyph box isn't visually
+# centered within its own reported height (likely descender padding), so
+# the math-centered position still read as slightly low on real hardware.
+TEXT_Y = int((SCREEN_H - screen.measure_text("SKOL")[1]) / 2) - 2
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# PIXEL FONT (3 wide x 5 tall, a few letters wider) - covers A-Z, 0-9, space,
-# dash and colon, enough for team abbreviations / scores / game clocks.
+# WIFI (non-blocking state machine, matches /system/apps/weather's pattern)
 # ──────────────────────────────────────────────────────────────────────────
 
-FONT = {
-    "0": (3, [(0,0),(1,0),(2,0), (0,1),(2,1), (0,2),(2,2), (0,3),(2,3), (0,4),(1,4),(2,4)]),
-    "1": (3, [(1,0), (0,1),(1,1), (1,2), (1,3), (0,4),(1,4),(2,4)]),
-    "2": (3, [(0,0),(1,0),(2,0), (2,1), (0,2),(1,2),(2,2), (0,3), (0,4),(1,4),(2,4)]),
-    "3": (3, [(0,0),(1,0),(2,0), (2,1), (1,2),(2,2), (2,3), (0,4),(1,4),(2,4)]),
-    "4": (3, [(0,0),(2,0), (0,1),(2,1), (0,2),(1,2),(2,2), (2,3), (2,4)]),
-    "5": (3, [(0,0),(1,0),(2,0), (0,1), (0,2),(1,2),(2,2), (2,3), (0,4),(1,4),(2,4)]),
-    "6": (3, [(0,0),(1,0),(2,0), (0,1), (0,2),(1,2),(2,2), (0,3),(2,3), (0,4),(1,4),(2,4)]),
-    "7": (3, [(0,0),(1,0),(2,0), (2,1), (2,2), (2,3), (2,4)]),
-    "8": (3, [(0,0),(1,0),(2,0), (0,1),(2,1), (0,2),(1,2),(2,2), (0,3),(2,3), (0,4),(1,4),(2,4)]),
-    "9": (3, [(0,0),(1,0),(2,0), (0,1),(2,1), (0,2),(1,2),(2,2), (2,3), (0,4),(1,4),(2,4)]),
-    "A": (3, [(1,0), (0,1),(2,1), (0,2),(1,2),(2,2), (0,3),(2,3), (0,4),(2,4)]),
-    "B": (3, [(0,0),(1,0), (0,1),(2,1), (0,2),(1,2), (0,3),(2,3), (0,4),(1,4)]),
-    "C": (3, [(1,0),(2,0), (0,1), (0,2), (0,3), (1,4),(2,4)]),
-    "D": (3, [(0,0),(1,0), (0,1),(2,1), (0,2),(2,2), (0,3),(2,3), (0,4),(1,4)]),
-    "E": (3, [(0,0),(1,0),(2,0), (0,1), (0,2),(1,2), (0,3), (0,4),(1,4),(2,4)]),
-    "F": (3, [(0,0),(1,0),(2,0), (0,1), (0,2),(1,2), (0,3), (0,4)]),
-    "G": (3, [(1,0),(2,0), (0,1), (0,2),(2,2), (0,3),(2,3), (1,4),(2,4)]),
-    "H": (3, [(0,0),(2,0), (0,1),(2,1), (0,2),(1,2),(2,2), (0,3),(2,3), (0,4),(2,4)]),
-    "I": (1, [(0,0),(0,1),(0,2),(0,3),(0,4)]),
-    "J": (3, [(2,0),(2,1),(2,2), (0,3),(2,3), (1,4)]),
-    "K": (3, [(0,0),(2,0), (0,1),(1,1), (0,2), (0,3),(1,3), (0,4),(2,4)]),
-    "L": (3, [(0,0), (0,1), (0,2), (0,3), (0,4),(1,4),(2,4)]),
-    "M": (5, [(0,0),(4,0), (0,1),(1,1),(3,1),(4,1), (0,2),(2,2),(4,2), (0,3),(4,3), (0,4),(4,4)]),
-    "N": (4, [(0,0),(3,0), (0,1),(1,1),(3,1), (0,2),(2,2),(3,2), (0,3),(3,3), (0,4),(3,4)]),
-    "O": (3, [(0,0),(1,0),(2,0), (0,1),(2,1), (0,2),(2,2), (0,3),(2,3), (0,4),(1,4),(2,4)]),
-    "P": (3, [(0,0),(1,0), (0,1),(2,1), (0,2),(1,2), (0,3), (0,4)]),
-    "Q": (3, [(1,0), (0,1),(2,1), (0,2),(2,2), (0,3),(2,3), (1,4),(2,4)]),
-    "R": (3, [(0,0),(1,0), (0,1),(2,1), (0,2),(1,2), (0,3),(2,3), (0,4),(2,4)]),
-    "S": (3, [(1,0),(2,0), (0,1), (1,2), (2,3), (0,4),(1,4)]),
-    "T": (3, [(0,0),(1,0),(2,0), (1,1), (1,2), (1,3), (1,4)]),
-    "U": (3, [(0,0),(2,0), (0,1),(2,1), (0,2),(2,2), (0,3),(2,3), (1,4)]),
-    "V": (3, [(0,0),(2,0), (0,1),(2,1), (0,2),(2,2), (1,3), (1,4)]),
-    "W": (5, [(0,0),(4,0), (0,1),(4,1), (0,2),(2,2),(4,2), (0,3),(1,3),(3,3),(4,3), (0,4),(4,4)]),
-    "X": (3, [(0,0),(2,0), (0,1),(2,1), (1,2), (0,3),(2,3), (0,4),(2,4)]),
-    "Y": (3, [(0,0),(2,0), (0,1),(2,1), (1,2), (1,3), (1,4)]),
-    "Z": (3, [(0,0),(1,0),(2,0), (2,1), (1,2), (0,3), (0,4),(1,4),(2,4)]),
-    " ": (2, []),
-    "-": (3, [(0,2),(1,2),(2,2)]),
-    ":": (1, [(0,1),(0,3)]),
-}
-GLYPH_SPACING = 1
+_wifi_connect_started = False
+WIFI_RETRY_INTERVAL_MS = 15 * 1000
+_last_wifi_attempt_ms = -WIFI_RETRY_INTERVAL_MS
 
 
-def _draw_text(x, y, text, pen_color):
+def _pump_wifi():
+    """Best-effort WiFi pump, throttled to once per WIFI_RETRY_INTERVAL_MS.
+
+    Wrapped in try/except because on this firmware build, a connection
+    failure (e.g. the saved access point not being in range) makes
+    wifi.tick()'s internal fatal_error() handler itself crash with
+    AttributeError: 'module' object has no attribute 'scroll' - a firmware
+    bug, confirmed live on 2026-10-01. Without the throttle, that failure
+    gets re-triggered on every single frame (no backoff happens because the
+    crash interrupts tick() before it can set its own retry timer), which
+    both spams the log and burns CPU that should go to animation.
+    """
+    global _wifi_connect_started, _last_wifi_attempt_ms
+
+    try:
+        if wifi.is_connected():
+            return True
+    except Exception:
+        pass
+
+    now = badge.ticks
+    if now - _last_wifi_attempt_ms < WIFI_RETRY_INTERVAL_MS:
+        return False
+    _last_wifi_attempt_ms = now
+
+    try:
+        wifi.tick()
+        if not _wifi_connect_started:
+            wifi.connect()
+            _wifi_connect_started = True
+    except Exception as e:
+        print("skol_display: wifi error (continuing offline):", e)
+    return False
+
+
+def _draw_static_text(text, y, pen_color):
+    width = screen.measure_text(text)[0]
     screen.pen = pen_color
-    cursor = x
-    for ch in text:
-        width, pixels = FONT.get(ch, FONT[" "])
-        for dx, dy in pixels:
-            px, py = cursor + dx, y + dy
-            if 0 <= px < SCREEN_W and 0 <= py < SCREEN_H:
-                screen.rectangle(px, py, 1, 1)
-        cursor += width + GLYPH_SPACING
-    return cursor - GLYPH_SPACING  # end x of last glyph
-
-
-def _text_width(text):
-    return sum(FONT.get(ch, FONT[" "])[0] + GLYPH_SPACING for ch in text) - GLYPH_SPACING
+    screen.text(text, int((SCREEN_W - width) / 2), y)
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# SCROLLING TEXT (shared by the score display and the SKOL idle animation)
+# SCROLLING TEXT (shared by score display and the SKOL idle animation)
 # ──────────────────────────────────────────────────────────────────────────
 
 _scroll_text = None
 _scroll_x = SCREEN_W
 _scroll_last_ms = 0
-SCROLL_SPEED_MS = 70
 
 
 def draw_scrolling_text(text, y, pen_color):
     global _scroll_text, _scroll_x, _scroll_last_ms
 
+    now = badge.ticks
     if text != _scroll_text:
         _scroll_text = text
         _scroll_x = SCREEN_W
-        _scroll_last_ms = time.ticks_ms()
+        _scroll_last_ms = now
 
-    now = time.ticks_ms()
-    if time.ticks_diff(now, _scroll_last_ms) >= SCROLL_SPEED_MS:
+    if now - _scroll_last_ms >= SCROLL_SPEED_MS:
         _scroll_x -= 1
-        if _scroll_x < -_text_width(text):
+        if _scroll_x < -screen.measure_text(text)[0]:
             _scroll_x = SCREEN_W
         _scroll_last_ms = now
 
-    _draw_text(_scroll_x, y, text, pen_color)
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# SIMPLE DRAWING PRIMITIVES (for the helmet animation)
-# ──────────────────────────────────────────────────────────────────────────
-
-def _draw_filled_circle(cx, cy, r, pen_color):
     screen.pen = pen_color
-    r2 = r * r
-    for dy in range(-r, r + 1):
-        for dx in range(-r, r + 1):
-            if dx * dx + dy * dy <= r2:
-                px, py = cx + dx, cy + dy
-                if 0 <= px < SCREEN_W and 0 <= py < SCREEN_H:
-                    screen.rectangle(px, py, 1, 1)
-
-
-def _draw_line(x0, y0, x1, y1, pen_color):
-    screen.pen = pen_color
-    dx, dy = x1 - x0, y1 - y0
-    steps = max(abs(dx), abs(dy))
-    if steps == 0:
-        if 0 <= x0 < SCREEN_W and 0 <= y0 < SCREEN_H:
-            screen.rectangle(x0, y0, 1, 1)
-        return
-    for i in range(steps + 1):
-        px = x0 + round(dx * i / steps)
-        py = y0 + round(dy * i / steps)
-        if 0 <= px < SCREEN_W and 0 <= py < SCREEN_H:
-            screen.rectangle(px, py, 1, 1)
+    screen.text(text, _scroll_x, y)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -169,76 +148,83 @@ def _draw_line(x0, y0, x1, y1, pen_color):
 # ──────────────────────────────────────────────────────────────────────────
 
 def anim_skol_scroll():
-    draw_scrolling_text("SKOL  ", (SCREEN_H - 5) // 2, color.rgb(*GOLD))
+    draw_scrolling_text("SKOL", TEXT_Y, BRIGHT)
+
+
+def _draw_horn(cx, cy, points, mirror, pen_color):
+    """Draws a curved horn as a chain of line segments. `points` is a list
+    of (dx, dy) offsets from (cx, cy); mirror=-1 flips dx for the right horn."""
+    screen.pen = pen_color
+    px, py = points[0]
+    for dx, dy in points[1:]:
+        screen.line(cx + mirror * px, cy + py, cx + mirror * dx, cy + dy)
+        px, py = dx, dy
+
+
+# Horn curve: sweeps up and out from the dome, then hooks back toward the
+# tip - the classic Vikings-logo horn silhouette. Offsets are for the LEFT
+# horn; the right horn mirrors dx.
+_HORN_POINTS = [(-5, -5), (-7, -8), (-9, -11), (-8, -13)]
 
 
 def anim_helmet_pulse():
-    phase = (time.ticks_ms() // 1200) % 2
-    pen_color = color.rgb(*(GOLD if phase == 0 else PURPLE))
+    phase = (badge.ticks // 900) % 2
+    pen_color = BRIGHT if phase == 0 else DIM
+    screen.pen = pen_color
 
-    cx, cy = SCREEN_W // 2, 16
-    _draw_filled_circle(cx, cy, 7, pen_color)
-    _draw_line(cx - 6, cy - 5, cx - 12, cy - 12, pen_color)
-    _draw_line(cx - 12, cy - 12, cx - 10, cy - 14, pen_color)
-    _draw_line(cx + 6, cy - 5, cx + 12, cy - 12, pen_color)
-    _draw_line(cx + 12, cy - 12, cx + 10, cy - 14, pen_color)
+    cx, cy = SCREEN_W // 2, 17
+
+    # Dome (the helmet shell)
+    screen.circle(cx, cy, 7)
+    # Jaw/chin-strap lines below the dome, to read as a football helmet
+    # rather than a plain ball
+    screen.line(cx - 7, cy + 2, cx - 5, cy + 6)
+    screen.line(cx + 7, cy + 2, cx + 5, cy + 6)
+
+    # The two curved horns
+    _draw_horn(cx, cy, _HORN_POINTS, 1, pen_color)
+    _draw_horn(cx, cy, _HORN_POINTS, -1, pen_color)
 
 
-_wave_offset = 0
-_wave_last_ms = 0
-WAVE_STRIPE_WIDTH = 4
+_chase_offset = 0
+_chase_last_ms = 0
+CHASE_DOT_SPACING = 5
+CHASE_SPEED_MS = 60
 
 
-def anim_color_wave():
-    global _wave_offset, _wave_last_ms
+def anim_chase_lights():
+    """A row of bright 'marching' dots sweeping across the screen - a
+    stand-in for a color wave that reads clearly on a brightness-only
+    display (full on/off contrast instead of a hue swap, which was
+    invisible on the real monochrome LED matrix)."""
+    global _chase_offset, _chase_last_ms
 
-    now = time.ticks_ms()
-    if time.ticks_diff(now, _wave_last_ms) >= 80:
-        _wave_offset = (_wave_offset + 1) % WAVE_STRIPE_WIDTH
-        _wave_last_ms = now
+    now = badge.ticks
+    if now - _chase_last_ms >= CHASE_SPEED_MS:
+        _chase_offset = (_chase_offset + 1) % CHASE_DOT_SPACING
+        _chase_last_ms = now
 
-    colors = (color.rgb(*GOLD), color.rgb(*PURPLE))
-    x = -_wave_offset
-    idx = 0
+    screen.pen = BRIGHT
+    y = SCREEN_H // 2
+    x = -_chase_offset
     while x < SCREEN_W:
-        draw_x = max(x, 0)
-        draw_w = min(x + WAVE_STRIPE_WIDTH, SCREEN_W) - draw_x
-        if draw_w > 0:
-            screen.pen = colors[idx % 2]
-            screen.rectangle(draw_x, 0, draw_w, SCREEN_H)
-        x += WAVE_STRIPE_WIDTH
-        idx += 1
+        if 0 <= x < SCREEN_W:
+            screen.circle(x, y, 1)
+        x += CHASE_DOT_SPACING
 
 
-IDLE_ANIMATIONS = (anim_skol_scroll, anim_helmet_pulse, anim_color_wave)
+IDLE_ANIMATIONS = (anim_skol_scroll, anim_helmet_pulse, anim_chase_lights)
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # VIKINGS GAME DATA
 # ──────────────────────────────────────────────────────────────────────────
 
-def _is_wifi_connected():
-    try:
-        import network
-        wlan = network.WLAN(network.STA_IF)
-        return wlan.active() and wlan.isconnected()
-    except Exception:
-        return False
-
-
 def fetch_game_state():
     """Returns a dict describing the Vikings' next/current game, or None if
-    offline, the request failed, or there's no upcoming/live game data."""
-    if not _is_wifi_connected():
-        return None
-
+    the request failed or there's no upcoming/live game data."""
     try:
-        import urequests as requests
-    except ImportError:
-        import requests
-
-    try:
-        resp = requests.get(VIKINGS_TEAM_ENDPOINT)
+        resp = urequests.get(VIKINGS_TEAM_ENDPOINT, timeout=10)
     except Exception as e:
         print("skol_display: request failed:", e)
         return None
@@ -270,7 +256,6 @@ def fetch_game_state():
         scores.append({
             "abbr": team.get("abbreviation", "???"),
             "score": c.get("score") or "0",
-            "home": c.get("homeAway") == "home",
         })
 
     return {
@@ -283,11 +268,11 @@ def fetch_game_state():
 
 def format_score_text(game_state):
     parts = ["{} {}".format(s["abbr"], s["score"]) for s in game_state["scores"]]
-    text = " - ".join(parts) if parts else "VIKINGS"
+    text = "  -  ".join(parts) if parts else "VIKINGS"
     period, clock = game_state.get("period"), game_state.get("clock")
     if period and clock:
         text += "   Q{} {}".format(period, clock)
-    return text + "   "
+    return text
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -300,32 +285,38 @@ _anim_index = 0
 _last_anim_switch_ms = 0
 
 
-def _poll_game_state():
-    global _game_state, _last_poll_ms
-    now = time.ticks_ms()
-    if time.ticks_diff(now, _last_poll_ms) < POLL_INTERVAL_MS:
-        return
-    _last_poll_ms = now
-    _game_state = fetch_game_state()
-
-
 def update():
-    global _anim_index, _last_anim_switch_ms
+    global _anim_index, _last_anim_switch_ms, _game_state, _last_poll_ms
 
-    _poll_game_state()
+    if badge.pressed(BUTTON_A):
+        _settings["animations_enabled"] = not _settings["animations_enabled"]
+        State.modify(STATE_NAME, {"animations_enabled": _settings["animations_enabled"]})
+
+    _pump_wifi()
+
+    # Poll unconditionally rather than gating on wifi.is_connected() - that
+    # check can be stale or wrong, and fetch_game_state() already handles
+    # its own connection failures (returns None), so gating here just adds
+    # a second, redundant way for the fetch to silently never happen.
+    now = badge.ticks
+    if now - _last_poll_ms >= POLL_INTERVAL_MS:
+        _last_poll_ms = now
+        _game_state = fetch_game_state()
+
     is_live = bool(_game_state and _game_state.get("state") == "in")
 
-    screen.pen = color.rgb(0, 0, 0)
+    screen.pen = color.black
     screen.clear()
 
     if is_live:
-        draw_scrolling_text(format_score_text(_game_state), (SCREEN_H - 5) // 2, color.rgb(*GOLD))
-    else:
-        now = time.ticks_ms()
-        if time.ticks_diff(now, _last_anim_switch_ms) >= ANIM_SWITCH_MS:
+        draw_scrolling_text(format_score_text(_game_state), TEXT_Y, BRIGHT)
+    elif _settings["animations_enabled"]:
+        if now - _last_anim_switch_ms >= ANIM_SWITCH_MS:
             _anim_index = (_anim_index + 1) % len(IDLE_ANIMATIONS)
             _last_anim_switch_ms = now
         IDLE_ANIMATIONS[_anim_index]()
+    else:
+        _draw_static_text("SKOL", TEXT_Y, MEDIUM)
 
 
 run(update)
