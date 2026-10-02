@@ -24,19 +24,38 @@ API confirmed live on real hardware on 2026-10-01 (see docs/DEVICE_SPECS.md):
     is_connected(), tick() and reads credentials from /system/secrets.py
     automatically - this app never touches secrets itself.
 
-ESPN's public team endpoint (no API key) is polled every 30s for game
-state; schema verified by hand against the live endpoint:
+ESPN's public team endpoint (no API key); schema verified by hand against
+the live endpoint:
   https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min
-  -> team.nextEvent[0].competitions[0].status.type.state ("pre"/"in"/"post"),
+  -> team.nextEvent[0].date ("2026-10-04T20:05Z", UTC, no seconds)
+     .competitions[0].status.type.state ("pre"/"in"/"post"),
      .status.period / .displayClock, .competitors[].team.abbreviation / .score
+
+Polling is adaptive rather than fixed-interval, since this is meant to be
+left plugged in long-term: it checks once a day (FAR_POLL_INTERVAL_MS)
+whenever a game isn't imminent, and only switches to a tight 30s cadence
+(NEAR_POLL_INTERVAL_MS) once within PRE_GAME_WINDOW_S of kickoff or while a
+game is actually live. Computing "how close is kickoff" needs real
+wall-clock time, so the badge syncs its clock via NTP (`ntptime`) once
+WiFi is reachable - confirmed working live on 2026-10-01. If NTP has never
+succeeded, pre-game countdown can't be computed and polling just stays on
+the daily cadence until a game is actually detected as "in".
 """
 
+import time
 import urequests
 import wifi
 from badgeware import State
 
+try:
+    import ntptime
+except ImportError:
+    ntptime = None
+
 VIKINGS_TEAM_ENDPOINT = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min"
-POLL_INTERVAL_MS = 30 * 1000
+FAR_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000
+NEAR_POLL_INTERVAL_MS = 30 * 1000
+PRE_GAME_WINDOW_S = 30 * 60
 ANIM_SWITCH_MS = 8 * 1000
 SCROLL_SPEED_MS = 70
 
@@ -260,10 +279,82 @@ def fetch_game_state():
 
     return {
         "state": state,
+        "date": events[0].get("date"),  # "2026-10-04T20:05Z" (UTC, kickoff)
         "period": status.get("period"),
         "clock": status.get("displayClock"),
         "scores": scores,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# ADAPTIVE POLLING - daily by default, 30s only near/during a live game.
+# Needs real wall-clock time (via NTP) to know how close "kickoff" is; see
+# module docstring.
+# ──────────────────────────────────────────────────────────────────────────
+
+_time_synced = False
+_last_ntp_attempt_ms = -FAR_POLL_INTERVAL_MS
+
+
+def _sync_time_if_due():
+    """Best-effort NTP sync, re-attempted at most once per FAR_POLL_INTERVAL_MS
+    (whether or not it succeeded last time, so a temporarily-offline badge
+    keeps retrying once a day rather than being permanently stuck unsynced)."""
+    global _time_synced, _last_ntp_attempt_ms
+
+    if ntptime is None:
+        return
+
+    now = badge.ticks
+    if now - _last_ntp_attempt_ms < FAR_POLL_INTERVAL_MS:
+        return
+    _last_ntp_attempt_ms = now
+
+    try:
+        ntptime.settime()
+        _time_synced = True
+    except Exception as e:
+        print("skol_display: ntp sync failed:", e)
+
+
+def _parse_kickoff_epoch(date_str):
+    """Parses ESPN's "2026-10-04T20:05Z" (always UTC) into a epoch-seconds
+    value comparable against time.time() on this same device - the two
+    don't need to agree on an absolute epoch, only with each other."""
+    if not date_str:
+        return None
+    try:
+        year = int(date_str[0:4])
+        month = int(date_str[5:7])
+        day = int(date_str[8:10])
+        hour = int(date_str[11:13])
+        minute = int(date_str[14:16])
+        return time.mktime((year, month, day, hour, minute, 0, 0, 0))
+    except Exception as e:
+        print("skol_display: kickoff date parse failed:", e)
+        return None
+
+
+def next_poll_interval_ms(game_state):
+    """How long to wait before the next check, given what we just learned."""
+    if game_state and game_state.get("state") == "in":
+        return NEAR_POLL_INTERVAL_MS
+
+    if game_state and game_state.get("state") == "pre" and _time_synced:
+        kickoff_epoch = _parse_kickoff_epoch(game_state.get("date"))
+        if kickoff_epoch is not None:
+            seconds_until = kickoff_epoch - time.time()
+            if seconds_until <= PRE_GAME_WINDOW_S:
+                # Already inside (or past, e.g. clock drift) the pre-game
+                # window - poll tightly so the pre->in transition is caught
+                # promptly.
+                return NEAR_POLL_INTERVAL_MS
+            # Still far out: wait until we'd be PRE_GAME_WINDOW_S away from
+            # kickoff, capped at a day, so a same-day or next-day game isn't
+            # overshot by a rigid 24h gap.
+            return min(int((seconds_until - PRE_GAME_WINDOW_S) * 1000), FAR_POLL_INTERVAL_MS)
+
+    return FAR_POLL_INTERVAL_MS
 
 
 def format_score_lines(game_state):
@@ -309,14 +400,14 @@ def draw_live_score(game_state):
 # ──────────────────────────────────────────────────────────────────────────
 
 _game_state = None
-_last_poll_ms = -POLL_INTERVAL_MS
+_next_poll_due_ms = 0  # 0 so the very first frame checks immediately
 _anim_index = 0
 _last_anim_switch_ms = 0
 _poll_pending = False
 
 
 def update():
-    global _anim_index, _last_anim_switch_ms, _game_state, _last_poll_ms, _poll_pending
+    global _anim_index, _last_anim_switch_ms, _game_state, _next_poll_due_ms, _poll_pending
 
     if badge.pressed(BUTTON_A):
         _settings["animations_enabled"] = not _settings["animations_enabled"]
@@ -324,10 +415,6 @@ def update():
 
     _pump_wifi()
 
-    # Poll unconditionally rather than gating on wifi.is_connected() - that
-    # check can be stale or wrong, and fetch_game_state() already handles
-    # its own connection failures (returns None), so gating here just adds
-    # a second, redundant way for the fetch to silently never happen.
     now = badge.ticks
 
     if _poll_pending:
@@ -338,11 +425,12 @@ def update():
         # flips once update() returns - the blocking call ran out the clock
         # before the frame ever reached the screen). Now that a full frame
         # has rendered with SYNC on it, it's safe to do the actual blocking
-        # fetch_game_state() call.
+        # work (NTP sync, then the fetch itself).
         _poll_pending = False
-        _last_poll_ms = now
+        _sync_time_if_due()
         _game_state = fetch_game_state()
-    elif now - _last_poll_ms >= POLL_INTERVAL_MS:
+        _next_poll_due_ms = now + next_poll_interval_ms(_game_state)
+    elif now >= _next_poll_due_ms:
         _poll_pending = True
         screen.pen = color.black
         screen.clear()
