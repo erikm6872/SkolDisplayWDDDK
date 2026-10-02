@@ -1,18 +1,42 @@
 # SkolDisplay
 
-A Python (MicroPython) app for the **Workday DevCon 2026 DevKit** — a
+A Minnesota Vikings badge app for the **Workday DevCon 2026 DevKit** — a
 Pimoroni Blinky 2350 conference badge with a 39×26 LED matrix.
 
 See [`docs/DEVICE_SPECS.md`](docs/DEVICE_SPECS.md) for full hardware specs
 and the on-device "badgeware" app framework this project targets.
 
-## Status
+## What it does
 
-Starter scaffold: `apps/skol_display/__init__.py` draws a scrolling "SKOL"
-marquee using the device's `screen` drawing API. Hand-rolled pixel glyphs are
-used for now since the official `badgeware.text` font-rendering API
-(`load_font`, `pen_glyph_renderer`) wasn't fully verified against this
-firmware build before the badge went offline.
+Two states, chosen each frame by polling ESPN's game status every 30s:
+
+1. **Vikings playing** — scrolls the live score (e.g. `MIN 17 - GB 14   Q3 8:42`).
+2. **Vikings not playing** — cycles through three idle animations every 8s:
+   a "SKOL" marquee, a pulsing purple/gold Viking helmet, and a scrolling
+   purple/gold stripe wave.
+
+Game data comes from ESPN's public team endpoint
+(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/min`) —
+no API key required. The response schema (`status.type.state`,
+`status.period`/`displayClock`, `competitors[].team.abbreviation`/`.score`)
+was verified by hand against the live endpoint on 2026-10-01.
+
+## Status / open questions
+
+Not yet tested on the physical badge — it went offline/reset mid-build.
+Known assumptions to verify once the device is available again (see also
+"Open / unconfirmed" in `docs/DEVICE_SPECS.md`):
+
+- **WiFi**: the app checks `network.WLAN(network.STA_IF).isconnected()` but
+  does **not** manage its own credentials — it assumes the badge's system
+  software already has it on a network. If that's wrong, we'll need to add
+  connection logic (likely reading from `/system/secrets.py` conventions, or
+  a new `secrets.py` the app manages itself).
+- **HTTPS via `urequests`**: untested on this firmware build.
+- **Pixel font legibility**: the hand-drawn 3×5 font in
+  `apps/skol_display/__init__.py` hasn't been seen on the real LED matrix.
+- **Deploy path**: where user apps actually need to live for the launcher to
+  pick them up (see Deploying below).
 
 ## Deploying
 
