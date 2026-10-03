@@ -9,10 +9,12 @@ Ideas for future work, not yet implemented.
   sprite work, `picovector` usage) beyond what `apps/skol_display/__init__.py`
   currently does, to make the idle animations more elaborate than the
   current helmet pulse / chase-light sweep.
-- **Default idle text**: change from "SKOL" to "SKOL VIKINGS", with a
-  subtle wave animation (as opposed to the current hard toggle between
-  static text and the animation rotation) — something gentler than the
-  existing marquee/chase-light effects for the default resting state.
+- **Default idle text wave animation**: `_draw_default_screen()` now shows
+  "SKOL" / "VIKINGS" stacked (as large as possible - `sins` font, measured
+  exactly against real hardware; see commit history and emulator/) but it's
+  still fully static. Still wanted: a subtle wave/breathing effect on this
+  default screen — something gentler than the existing marquee/chase-light
+  animations, not a hard toggle to a different animated state.
 - **Real-life clock option** for the idle state when no game is on — an
   alternative to (or another entry in the rotation alongside) the current
   animations, showing the current time. Depends on the NTP time sync
