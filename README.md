@@ -8,10 +8,19 @@ and the on-device "badgeware" app framework this project targets.
 
 Live hardware has repeatedly hung mid-session (see "Confirmed quirks"
 below), making iteration on the physical badge impractical at times — see
-[`emulator/`](emulator/) for a software stand-in that runs the real app
-source without needing the device. Not a hardware-fidelity guarantee (see
-its README for exactly what is and isn't trustworthy there), but good
-enough for layout/logic iteration between hardware check-ins.
+[blinky-emulator](https://github.com/erikm6872/blinky-emulator) (a separate
+repo, since it's reusable across any badgeware project targeting this
+device) for a software stand-in that runs this app's real source without
+needing the device:
+
+```
+git clone https://github.com/erikm6872/blinky-emulator.git
+python3 blinky-emulator/server.py --app apps/skol_display/__init__.py
+```
+
+Then open http://localhost:8765/. Not a hardware-fidelity guarantee (see
+that repo's README for exactly what is and isn't trustworthy there), but
+good enough for layout/logic iteration between hardware check-ins.
 
 ## Status: working, deployed through the actual on-device menu (2026-10-01)
 
