@@ -6,6 +6,13 @@ Pimoroni Blinky 2350 conference badge with a 39×26 monochrome LED matrix.
 See [`docs/DEVICE_SPECS.md`](docs/DEVICE_SPECS.md) for full hardware specs
 and the on-device "badgeware" app framework this project targets.
 
+Live hardware has repeatedly hung mid-session (see "Confirmed quirks"
+below), making iteration on the physical badge impractical at times — see
+[`emulator/`](emulator/) for a software stand-in that runs the real app
+source without needing the device. Not a hardware-fidelity guarantee (see
+its README for exactly what is and isn't trustworthy there), but good
+enough for layout/logic iteration between hardware check-ins.
+
 ## Status: working, deployed through the actual on-device menu (2026-10-01)
 
 Three states in `apps/skol_display/__init__.py`:
