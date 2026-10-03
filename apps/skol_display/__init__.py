@@ -168,17 +168,27 @@ def _draw_static_text(text, y, pen_color):
 # Default idle screen: "SKOL" / "VIKINGS" stacked, as large as possible.
 # Measured every ROM font against the 39x26 screen - "VIKINGS" (7 chars)
 # doesn't fit under any of them; "sins" is the closest (40px vs the 39px
-# screen, 1px over) while still being reasonably large (12px tall), so two
-# lines + a 2px gap exactly fill the 26px height. Confirmed live that the
-# 1px overflow doesn't crash screen.text() - it's just silently clipped.
+# screen, 1px over) while still being reasonably large (12px tall). Confirmed
+# live that the 1px horizontal overflow doesn't crash screen.text() - it's
+# just silently clipped.
+#
+# The real panel has 3 buttons embedded in the bottom few rows (~22-25) -
+# see docs/DEVICE_SPECS.md - so "VIKINGS" needs to clear row ~22, not just
+# the nominal 26px screen bottom. A real-hardware photo showed visible
+# blank space above "SKOL" at y=0, meaning the real "sins" font has some
+# built-in leading our height measurement didn't capture - so both lines
+# have room to shift up. SKOL_Y and the tightened gap below are an
+# empirical first attempt at using that slack; re-check against hardware
+# and adjust further if "VIKINGS" still runs into the buttons.
+SKOL_Y = -3
 DEFAULT_LINE_HEIGHT = 12
-DEFAULT_LINE_GAP = 2
+DEFAULT_LINE_GAP = 0
 
 
 def _draw_default_screen():
     screen.font = rom_font.sins
-    _draw_static_text("SKOL", 0, MEDIUM)
-    _draw_static_text("VIKINGS", DEFAULT_LINE_HEIGHT + DEFAULT_LINE_GAP, MEDIUM)
+    _draw_static_text("SKOL", SKOL_Y, MEDIUM)
+    _draw_static_text("VIKINGS", SKOL_Y + DEFAULT_LINE_HEIGHT + DEFAULT_LINE_GAP, MEDIUM)
 
 
 # ──────────────────────────────────────────────────────────────────────────
