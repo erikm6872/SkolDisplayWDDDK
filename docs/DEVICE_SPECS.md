@@ -44,6 +44,44 @@ REPL (USB CDC-ACM, `idVendor=0x2e8a` "Pimoroni", `idProduct=0x1102` "Pimoroni Bl
 - Brightness is controllable via `blinky.Blinky` (`set_brightness`,
   `get_brightness`, `adjust_brightness`).
 
+### The panel is NOT a clean rectangle - physical buttons are embedded in it
+
+Confirmed live on 2026-10-02 by photographing the badge with every LED lit
+to 50% brightness (a uniform fill makes the panel's actual silhouette
+obvious - see the project's git history around that date for the photos
+this was derived from). Five of the physical buttons sit directly inside
+the LED grid's footprint, not beside it - the panel has genuine notches cut
+out at each button position, not just a button cap resting on top of
+otherwise-present LEDs.
+
+Approximate dead-zone regions in the logical 39×26 `(x, y)` coordinate
+space (estimated from photo proportions against the known grid size, NOT
+precision-measured - treat as "roughly here," good enough to design around
+but not pixel-exact):
+
+| Button | Columns (x) | Rows (y) |
+|---|---|---|
+| Right, upper | ~34-38 | ~5-9 |
+| Right, lower | ~34-38 | ~13-17 |
+| Bottom, left | ~10-13 | ~22-25 |
+| Bottom, middle | ~18-21 | ~22-25 |
+| Bottom, right | ~26-29 | ~22-25 |
+
+**Practical implication**: any layout using the full nominal 39×26 canvas
+can silently run content behind/through these buttons. This was discovered
+*because* of exactly that: SkolDisplay's "SKOL"/"VIKINGS" stacked default
+screen places "VIKINGS" at rows 14-25, which overlaps the bottom-button row
+band (22-25) across most of its width - the text itself was correct, but
+part of it visually reads differently than expected because physical
+button caps sit on top of/interrupt that region. Check prospective
+layouts against this table, especially anything using the lower quarter or
+right-edge columns of the screen.
+
+The [blinky-emulator](https://github.com/erikm6872/blinky-emulator)
+project renders these dead zones as an overlay for exactly this reason -
+use it when laying out new screens rather than relying on the nominal
+39×26 bounds alone.
+
 ## Input
 
 - Buttons (all exposed as `board` pins / global constants in apps):
