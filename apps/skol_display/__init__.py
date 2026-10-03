@@ -40,9 +40,23 @@ wall-clock time, so the badge syncs its clock via NTP (`ntptime`) once
 WiFi is reachable - confirmed working live on 2026-10-01. If NTP has never
 succeeded, pre-game countdown can't be computed and polling just stays on
 the daily cadence until a game is actually detected as "in".
+
+fetch_game_state()'s urequests.get() is only ever attempted when
+network.WLAN(network.STA_IF).isconnected() is True (see
+_is_wifi_fully_connected()) - added after repeated unrecoverable hangs
+(REPL unresponsive, needing a physical power-cycle) were observed live on
+2026-10-02/03, suspected to be urequests.get() blocking indefinitely if
+attempted while the interface is still mid-handshake. This is a
+best-effort mitigation for a suspected, not fully confirmed, root cause -
+if hangs recur even with this gate in place, the actual culprit is more
+likely wifi.tick()/wifi.connect() themselves (called unconditionally every
+~15s by _pump_wifi() while not yet connected), which can't be gated the
+same way since they're what makes the connection happen in the first
+place.
 """
 
 import time
+import network
 import urequests
 import wifi
 from badgeware import State
@@ -56,6 +70,7 @@ VIKINGS_TEAM_ENDPOINT = "https://site.api.espn.com/apis/site/v2/sports/football/
 FAR_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000
 NEAR_POLL_INTERVAL_MS = 30 * 1000
 PRE_GAME_WINDOW_S = 30 * 60
+OFFLINE_RETRY_INTERVAL_MS = 2 * 60 * 1000
 ANIM_SWITCH_MS = 8 * 1000
 SCROLL_SPEED_MS = 70
 
@@ -128,10 +143,42 @@ def _pump_wifi():
     return False
 
 
+def _is_wifi_fully_connected():
+    """Checks the underlying network.WLAN directly rather than
+    wifi.is_connected() (whose own internal `wlan` reference has been
+    observed as None/stale even while actually connected). This gates the
+    blocking fetch_game_state() call: suspected (not fully confirmed) cause
+    of a hang seen live on 2026-10-02/03 - urequests.get() apparently able
+    to block indefinitely if attempted while the interface is still mid-
+    handshake rather than fully associated with a working DHCP lease. Only
+    proceeding when isconnected() is definitively True should avoid ever
+    attempting the blocking call during that transitional window."""
+    try:
+        return network.WLAN(network.STA_IF).isconnected()
+    except Exception:
+        return False
+
+
 def _draw_static_text(text, y, pen_color):
     width = screen.measure_text(text)[0]
     screen.pen = pen_color
     screen.text(text, int((SCREEN_W - width) / 2), y)
+
+
+# Default idle screen: "SKOL" / "VIKINGS" stacked, as large as possible.
+# Measured every ROM font against the 39x26 screen - "VIKINGS" (7 chars)
+# doesn't fit under any of them; "sins" is the closest (40px vs the 39px
+# screen, 1px over) while still being reasonably large (12px tall), so two
+# lines + a 2px gap exactly fill the 26px height. Confirmed live that the
+# 1px overflow doesn't crash screen.text() - it's just silently clipped.
+DEFAULT_LINE_HEIGHT = 12
+DEFAULT_LINE_GAP = 2
+
+
+def _draw_default_screen():
+    screen.font = rom_font.sins
+    _draw_static_text("SKOL", 0, MEDIUM)
+    _draw_static_text("VIKINGS", DEFAULT_LINE_HEIGHT + DEFAULT_LINE_GAP, MEDIUM)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -425,11 +472,16 @@ def update():
         # flips once update() returns - the blocking call ran out the clock
         # before the frame ever reached the screen). Now that a full frame
         # has rendered with SYNC on it, it's safe to do the actual blocking
-        # work (NTP sync, then the fetch itself).
+        # work (NTP sync, then the fetch itself) - but only if the
+        # interface is definitively, fully connected; see
+        # _is_wifi_fully_connected()'s docstring for why.
         _poll_pending = False
-        _sync_time_if_due()
-        _game_state = fetch_game_state()
-        _next_poll_due_ms = now + next_poll_interval_ms(_game_state)
+        if _is_wifi_fully_connected():
+            _sync_time_if_due()
+            _game_state = fetch_game_state()
+            _next_poll_due_ms = now + next_poll_interval_ms(_game_state)
+        else:
+            _next_poll_due_ms = now + OFFLINE_RETRY_INTERVAL_MS
     elif now >= _next_poll_due_ms:
         _poll_pending = True
         screen.pen = color.black
@@ -455,7 +507,7 @@ def update():
             _last_anim_switch_ms = now
         IDLE_ANIMATIONS[_anim_index]()
     else:
-        _draw_static_text("SKOL", TEXT_Y, MEDIUM)
+        _draw_default_screen()
 
 
 run(update)
