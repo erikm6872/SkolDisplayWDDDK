@@ -68,6 +68,14 @@ REPL (USB CDC-ACM, `idVendor=0x2e8a` "Pimoroni", `idProduct=0x1102` "Pimoroni Bl
   `is_charging()`, `usb_connected()`, `light_level()` (has an onboard light sensor),
   `sleep()`, `pressed_to_wake`, `wake_reason()`, `woken_by_button()`,
   `woken_by_reset()`.
+- **No automatic sleep while an app is actively running**: confirmed by
+  leaving SkolDisplay running unattended on USB power for ~24h with no
+  button presses — it was still mid-animation and fully responsive the
+  next day, not stuck/unresponsive. Whatever triggers `sleep()` (the API
+  exists) isn't invoked automatically by the `run()` loop itself; an app
+  would have to call it explicitly. (The *menu* app going unresponsive
+  during earlier debugging was most likely something else - e.g. the
+  `_msc`/Disk-Mode service state - not idle-triggered deep sleep.)
 
 ## RTC
 
