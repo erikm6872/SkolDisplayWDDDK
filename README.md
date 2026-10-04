@@ -48,14 +48,18 @@ Three states in `apps/skol_display/__init__.py`:
    marquee, a pulsing Viking helmet, and a chase-light sweep.
 
 Press **BUTTON_A** to toggle between states 2 and 3; press **BUTTON_B** to
-cycle the default screen's font through all 37 confirmed `rom_font`
-entries. Both choices are persisted via `badgeware.State` so they survive
-app restarts. The default screen's vertical layout is computed fresh each
-frame from the *currently selected* font's own `measure_text()` height
-rather than one hardcoded offset, so it adapts automatically as the font
-changes — some taller fonts will still run into the bottom-row buttons or
-clip off-screen, same accepted tradeoff as "VIKINGS" silently overflowing
-1px wide in the original "sins" default.
+cycle the default screen's AND the live score/clock screens' font through
+all 37 confirmed `rom_font` entries (one shared font choice, not separate
+per screen). Both choices are persisted via `badgeware.State` so they
+survive app restarts. Vertical layout for all three of these static text
+screens is computed fresh each frame from the *currently selected* font's
+own `measure_text()` height rather than one hardcoded offset, so it adapts
+automatically as the font changes — some taller/wider fonts will still run
+into the bottom-row buttons, overlap the live score's two stacked lines,
+or clip off-screen, same accepted tradeoff as "VIKINGS" silently
+overflowing 1px wide in the original "sins" default. The SKOL marquee
+animation keeps its own fixed font ("smart") since it isn't part of this
+cycle.
 
 All three states, the WiFi retry path, and the button toggle have been
 exercised live on the physical badge. Not yet tested: an actual live NFL

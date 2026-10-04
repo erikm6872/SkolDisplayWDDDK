@@ -7,8 +7,9 @@ Two states:
     brightness. Press BUTTON_A to toggle on a rotation of Vikings-themed
     animations (off by default so they don't get annoying); the choice is
     persisted via badgeware.State so it survives app restarts. Press
-    BUTTON_B to cycle the default screen's font through all 37 confirmed
-    rom_font entries (also persisted).
+    BUTTON_B to cycle the default screen's AND the live score/clock
+    screens' font through all 37 confirmed rom_font entries (also
+    persisted).
 
 API confirmed live on real hardware on 2026-10-01 (see docs/DEVICE_SPECS.md):
   - Globals injected by the launcher: screen, color, rom_font, badge,
@@ -95,11 +96,13 @@ STATE_NAME = "skol_display"
 
 # All 37 rom_font entries confirmed to exist on this firmware build (see
 # blinky-emulator/font_metrics.py, measured live on hardware on 2026-10-01/
-# 02). BUTTON_B cycles the default idle screen ("SKOL"/"VIKINGS") through
-# these. Live score (desert) and the SKOL marquee (smart) keep their own
-# hand-picked fonts instead of following this - those were chosen for a
-# functional fit (compactness/measured TEXT_Y), not looks.
-DEFAULT_SCREEN_FONTS = (
+# 02). BUTTON_B cycles BOTH the default idle screen ("SKOL"/"VIKINGS") and
+# the live score/clock pages through these. The SKOL marquee animation
+# keeps its own hand-picked font ("smart") instead of following this - its
+# TEXT_Y is computed once at module load specifically for that font, and
+# scrolling (unlike these static, centered screens) doesn't hit the same
+# vertical-layout concerns.
+CYCLABLE_FONTS = (
     "smart", "desert", "match", "ark", "memo", "badgeware", "corset",
     "outflank", "compass", "awesome", "badgewaremax", "bacteria", "curse",
     "fear", "futile", "holotype", "hungry", "ignore", "kobold", "lookout",
@@ -112,7 +115,7 @@ _settings = {
     "animations_enabled": False,
     # Starts on "sins" so the default look is unchanged until BUTTON_B is
     # actually pressed.
-    "font_index": DEFAULT_SCREEN_FONTS.index("sins"),
+    "font_index": CYCLABLE_FONTS.index("sins"),
 }
 State.load(STATE_NAME, _settings)
 
@@ -196,7 +199,7 @@ def _draw_static_text(text, y, pen_color):
 
 
 # Default idle screen: "SKOL" / "VIKINGS" stacked, font chosen by BUTTON_B
-# (see DEFAULT_SCREEN_FONTS above). Vertical position is computed fresh each
+# (see CYCLABLE_FONTS above). Vertical position is computed fresh each
 # draw from the CURRENTLY selected font's own measure_text() height, rather
 # than a single hardcoded offset tuned for one font - since different fonts
 # report very different heights (10px-30px per the measured table). Centers
@@ -211,7 +214,7 @@ DEFAULT_LINE_GAP = 1
 
 
 def _draw_default_screen():
-    screen.font = getattr(rom_font, DEFAULT_SCREEN_FONTS[_settings["font_index"]])
+    screen.font = getattr(rom_font, CYCLABLE_FONTS[_settings["font_index"]])
     skol_h = screen.measure_text("SKOL")[1]
     vikings_h = screen.measure_text("VIKINGS")[1]
     total_h = skol_h + DEFAULT_LINE_GAP + vikings_h
@@ -520,28 +523,29 @@ def format_clock_text(game_state):
 # any available font without scrolling (measured: even the most compact ROM
 # font, "desert", needs ~61px for team abbreviations + scores alone). Rather
 # than scroll, show two static pages and toggle between them: team scores
-# stacked two lines tall, then the quarter/clock - each one fits statically
-# in "desert" (10px glyph height, narrow enough per line/string to stay
-# under 39px at these string lengths).
+# stacked two lines tall, then the quarter/clock. "desert" was the original
+# fixed choice here (10px glyph height, narrow enough per line/string to
+# stay under 39px at these string lengths) - now just the CYCLABLE_FONTS
+# default (BUTTON_B can pick a different one, same as the idle screen).
+# Line height/centering is computed fresh each frame from the SELECTED
+# font's own measure_text() height rather than a hardcoded constant, same
+# approach as _draw_default_screen() - a wider/taller font picked via
+# BUTTON_B may run lines off the edges here too, same accepted tradeoff.
 SCORE_PAGE_SWITCH_MS = 4 * 1000
-LIVE_LINE_HEIGHT = 10
 LIVE_LINE_GAP = 2
 
 
 def draw_live_score(game_state):
-    screen.font = rom_font.desert
+    screen.font = getattr(rom_font, CYCLABLE_FONTS[_settings["font_index"]])
     showing_scores = (badge.ticks // SCORE_PAGE_SWITCH_MS) % 2 == 0
 
-    if showing_scores:
-        lines = format_score_lines(game_state)
-        total_h = len(lines) * LIVE_LINE_HEIGHT + (len(lines) - 1) * LIVE_LINE_GAP
-        y = int((SCREEN_H - total_h) / 2)
-        for line in lines:
-            _draw_static_text(line, y, BRIGHT)
-            y += LIVE_LINE_HEIGHT + LIVE_LINE_GAP
-    else:
-        y = int((SCREEN_H - LIVE_LINE_HEIGHT) / 2)
-        _draw_static_text(format_clock_text(game_state), y, BRIGHT)
+    lines = format_score_lines(game_state) if showing_scores else [format_clock_text(game_state)]
+    line_h = screen.measure_text(lines[0])[1]
+    total_h = len(lines) * line_h + (len(lines) - 1) * LIVE_LINE_GAP
+    y = max(int((DEFAULT_SCREEN_USABLE_H - total_h) / 2), 0)
+    for line in lines:
+        _draw_static_text(line, y, BRIGHT)
+        y += line_h + LIVE_LINE_GAP
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -576,7 +580,7 @@ def update():
         State.modify(STATE_NAME, {"animations_enabled": _settings["animations_enabled"]})
 
     if badge.pressed(BUTTON_B):
-        _settings["font_index"] = (_settings["font_index"] + 1) % len(DEFAULT_SCREEN_FONTS)
+        _settings["font_index"] = (_settings["font_index"] + 1) % len(CYCLABLE_FONTS)
         State.modify(STATE_NAME, {"font_index": _settings["font_index"]})
 
     _pump_wifi()
