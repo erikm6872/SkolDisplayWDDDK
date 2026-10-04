@@ -20,3 +20,8 @@ Ideas for future work, not yet implemented.
   animations, showing the current time. Depends on the NTP time sync
   already added for adaptive polling (see `_sync_time_if_due()` /
   `_time_synced` in the app) actually having succeeded.
+- **Touchdown animation** — a one-shot celebration (e.g. "SKOL TD" with an
+  explosion/burst effect) triggered during a live game. Needs a way to
+  detect a score increase between polls (diff the previous `_game_state`
+  scores against the new ones in `fetch_game_state()`/`update()`) to know
+  when to fire it, separate from the existing idle-only animations.
