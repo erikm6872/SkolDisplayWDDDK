@@ -77,12 +77,13 @@ operation.
 - Vertical centering of `screen.text()` needed a small empirical nudge
   beyond the math — see the `TEXT_Y` comment in the app.
 - **The display only flips once per completed `update()` call.** Drawing a
-  status message and then blocking (e.g. a network call) in the *same*
+  status indicator and then blocking (e.g. a network call) in the *same*
   `update()` call never actually shows it — the frame never gets flushed
-  before the blocking call runs out the clock. The app's "SYNC" status
-  (shown before polling for a score) has to be drawn on one frame that
-  returns immediately, with the actual blocking fetch deferred to the next
-  frame — see the `_poll_pending` state machine in the app.
+  before the blocking call runs out the clock. The app's small top-right
+  sync icon (shown before polling for a score, without otherwise disturbing
+  whatever's currently on screen) has to be drawn on one frame that returns
+  immediately, with the actual blocking fetch deferred to the next frame —
+  see the `_poll_pending` state machine in the app.
 - **Never use `machine.WDT` here.** Tested it as a hang-mitigation idea; an
   unfed watchdog survives a normal reset on this chip and keeps force-
   rebooting the device until a full physical power-cycle. It's also a

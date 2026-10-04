@@ -533,6 +533,19 @@ _last_anim_switch_ms = 0
 _poll_pending = False
 
 
+SYNC_ICON_SIZE = 3
+
+
+def _draw_sync_icon():
+    # Small top-right indicator instead of a full-screen takeover, so
+    # whatever's already showing (score, clock, default screen, or an
+    # animation) stays visible underneath it. Placed at x=35-37, y=0-2 -
+    # clear of both right-side button dead zones (which start at y=5 and
+    # y=13; see docs/DEVICE_SPECS.md), so it doesn't sit behind a button.
+    screen.pen = BRIGHT
+    screen.rectangle(SCREEN_W - SYNC_ICON_SIZE - 1, 0, SYNC_ICON_SIZE, SYNC_ICON_SIZE)
+
+
 def update():
     global _anim_index, _last_anim_switch_ms, _game_state, _next_poll_due_ms, _poll_pending
 
@@ -543,18 +556,21 @@ def update():
     _pump_wifi()
 
     now = badge.ticks
+    poll_about_to_fire = False
 
     if _poll_pending:
-        # The previous frame already painted "SYNC" and returned, so the
-        # display has had a chance to actually render it (confirmed on
-        # hardware: drawing a status message and then blocking in the SAME
+        # The previous frame already drew the sync icon and returned, so
+        # the display has had a chance to actually render it (confirmed on
+        # hardware: drawing something and then blocking in the SAME
         # update() call never showed anything, because the framebuffer only
         # flips once update() returns - the blocking call ran out the clock
         # before the frame ever reached the screen). Now that a full frame
-        # has rendered with SYNC on it, it's safe to do the actual blocking
-        # work (NTP sync, then the fetch itself) - but only if the
+        # has rendered with the icon on it, it's safe to do the actual
+        # blocking work (NTP sync, then the fetch itself) - but only if the
         # interface is definitively, fully connected; see
-        # _is_wifi_fully_connected()'s docstring for why.
+        # _is_wifi_fully_connected()'s docstring for why. The icon stays
+        # frozen on the physical display throughout this blocking call,
+        # since nothing flips again until this frame also returns.
         _poll_pending = False
         if _is_wifi_fully_connected():
             _sync_time_if_due()
@@ -564,11 +580,7 @@ def update():
             _next_poll_due_ms = now + OFFLINE_RETRY_INTERVAL_MS
     elif now >= _next_poll_due_ms:
         _poll_pending = True
-        screen.pen = color.black
-        screen.clear()
-        screen.font = rom_font.desert
-        _draw_static_text("SYNC", int((SCREEN_H - 10) / 2), DIM)
-        return
+        poll_about_to_fire = True
 
     is_live = bool(_game_state and _game_state.get("state") == "in")
 
@@ -588,6 +600,9 @@ def update():
         IDLE_ANIMATIONS[_anim_index]()
     else:
         _draw_default_screen()
+
+    if poll_about_to_fire:
+        _draw_sync_icon()
 
 
 run(update)
