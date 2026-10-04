@@ -6,7 +6,9 @@ Two states:
   - IDLE: no game in progress -> by default, shows a static "SKOL" at medium
     brightness. Press BUTTON_A to toggle on a rotation of Vikings-themed
     animations (off by default so they don't get annoying); the choice is
-    persisted via badgeware.State so it survives app restarts.
+    persisted via badgeware.State so it survives app restarts. Press
+    BUTTON_B to cycle the default screen's font through all 37 confirmed
+    rom_font entries (also persisted).
 
 API confirmed live on real hardware on 2026-10-01 (see docs/DEVICE_SPECS.md):
   - Globals injected by the launcher: screen, color, rom_font, badge,
@@ -90,7 +92,28 @@ MEDIUM = color.rgb(120, 120, 120)
 DIM = color.rgb(50, 50, 50)
 
 STATE_NAME = "skol_display"
-_settings = {"animations_enabled": False}
+
+# All 37 rom_font entries confirmed to exist on this firmware build (see
+# blinky-emulator/font_metrics.py, measured live on hardware on 2026-10-01/
+# 02). BUTTON_B cycles the default idle screen ("SKOL"/"VIKINGS") through
+# these. Live score (desert) and the SKOL marquee (smart) keep their own
+# hand-picked fonts instead of following this - those were chosen for a
+# functional fit (compactness/measured TEXT_Y), not looks.
+DEFAULT_SCREEN_FONTS = (
+    "smart", "desert", "match", "ark", "memo", "badgeware", "corset",
+    "outflank", "compass", "awesome", "badgewaremax", "bacteria", "curse",
+    "fear", "futile", "holotype", "hungry", "ignore", "kobold", "lookout",
+    "loser", "manticore", "more", "nope", "saga", "salty", "sins",
+    "teatime", "torch", "troll", "unfair", "vest", "winds", "yesterday",
+    "yolk", "ziplock", "absolute",
+)
+
+_settings = {
+    "animations_enabled": False,
+    # Starts on "sins" so the default look is unchanged until BUTTON_B is
+    # actually pressed.
+    "font_index": DEFAULT_SCREEN_FONTS.index("sins"),
+}
 State.load(STATE_NAME, _settings)
 
 SCREEN_W, SCREEN_H = screen.width, screen.height
@@ -172,30 +195,29 @@ def _draw_static_text(text, y, pen_color):
     screen.text(text, int((SCREEN_W - width) / 2), y)
 
 
-# Default idle screen: "SKOL" / "VIKINGS" stacked, as large as possible.
-# Measured every ROM font against the 39x26 screen - "VIKINGS" (7 chars)
-# doesn't fit under any of them; "sins" is the closest (40px vs the 39px
-# screen, 1px over) while still being reasonably large (12px tall). Confirmed
-# live that the 1px horizontal overflow doesn't crash screen.text() - it's
-# just silently clipped.
-#
-# The real panel has 3 buttons embedded in the bottom few rows (~22-25) -
-# see docs/DEVICE_SPECS.md - so "VIKINGS" needs to clear row ~22, not just
-# the nominal 26px screen bottom. A real-hardware photo showed visible
-# blank space above "SKOL" at y=0, meaning the real "sins" font has some
-# built-in leading our height measurement didn't capture - so both lines
-# have room to shift up. SKOL_Y and the tightened gap below are an
-# empirical first attempt at using that slack; re-check against hardware
-# and adjust further if "VIKINGS" still runs into the buttons.
-SKOL_Y = -3
-DEFAULT_LINE_HEIGHT = 12
-DEFAULT_LINE_GAP = 0
+# Default idle screen: "SKOL" / "VIKINGS" stacked, font chosen by BUTTON_B
+# (see DEFAULT_SCREEN_FONTS above). Vertical position is computed fresh each
+# draw from the CURRENTLY selected font's own measure_text() height, rather
+# than a single hardcoded offset tuned for one font - since different fonts
+# report very different heights (10px-30px per the measured table). Centers
+# within DEFAULT_SCREEN_USABLE_H rather than the full screen height, since
+# the real panel has 3 buttons embedded in the bottom few rows (~22-25) -
+# see docs/DEVICE_SPECS.md. Some taller fonts will still run into that zone
+# or clip off the bottom - same tradeoff as "VIKINGS" silently overflowing
+# 1px wide in "sins", accepted rather than shrinking the whole screen's
+# usable area down further.
+DEFAULT_SCREEN_USABLE_H = 22
+DEFAULT_LINE_GAP = 1
 
 
 def _draw_default_screen():
-    screen.font = rom_font.sins
-    _draw_static_text("SKOL", SKOL_Y, MEDIUM)
-    _draw_static_text("VIKINGS", SKOL_Y + DEFAULT_LINE_HEIGHT + DEFAULT_LINE_GAP, MEDIUM)
+    screen.font = getattr(rom_font, DEFAULT_SCREEN_FONTS[_settings["font_index"]])
+    skol_h = screen.measure_text("SKOL")[1]
+    vikings_h = screen.measure_text("VIKINGS")[1]
+    total_h = skol_h + DEFAULT_LINE_GAP + vikings_h
+    y = max(int((DEFAULT_SCREEN_USABLE_H - total_h) / 2), 0)
+    _draw_static_text("SKOL", y, MEDIUM)
+    _draw_static_text("VIKINGS", y + skol_h + DEFAULT_LINE_GAP, MEDIUM)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -552,6 +574,10 @@ def update():
     if badge.pressed(BUTTON_A):
         _settings["animations_enabled"] = not _settings["animations_enabled"]
         State.modify(STATE_NAME, {"animations_enabled": _settings["animations_enabled"]})
+
+    if badge.pressed(BUTTON_B):
+        _settings["font_index"] = (_settings["font_index"] + 1) % len(DEFAULT_SCREEN_FONTS)
+        State.modify(STATE_NAME, {"font_index": _settings["font_index"]})
 
     _pump_wifi()
 
