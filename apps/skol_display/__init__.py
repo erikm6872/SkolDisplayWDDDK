@@ -70,7 +70,14 @@ VIKINGS_TEAM_ENDPOINT = "https://site.api.espn.com/apis/site/v2/sports/football/
 FAR_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000
 NEAR_POLL_INTERVAL_MS = 30 * 1000
 PRE_GAME_WINDOW_S = 30 * 60
-OFFLINE_RETRY_INTERVAL_MS = 2 * 60 * 1000
+# Confirmed live on 2026-10-04: at fresh boot, WiFi often isn't fully
+# connected yet at the exact moment of the very first poll attempt (it
+# takes a few seconds to associate after the app starts) - with this at
+# 2 minutes, that one unlucky-timing miss meant waiting a full 2 minutes
+# before trying again, even though WiFi actually finished connecting
+# within a few seconds. Short, since this is specifically for "WiFi isn't
+# up yet," a transient startup condition, not sustained offline.
+OFFLINE_RETRY_INTERVAL_MS = 10 * 1000
 ANIM_SWITCH_MS = 8 * 1000
 SCROLL_SPEED_MS = 70
 
@@ -296,6 +303,59 @@ IDLE_ANIMATIONS = (anim_skol_scroll, anim_helmet_pulse, anim_chase_lights)
 # VIKINGS GAME DATA
 # ──────────────────────────────────────────────────────────────────────────
 
+def _fetch_live_summary(event_id):
+    """The team endpoint's own `competitors[].score` is unreliable while a
+    game is actually in progress - confirmed live on 2026-10-04:
+    status.period/displayClock were correct ("in", period 1, "1:23") but
+    both teams' `score` fields were null, so the live-score page was stuck
+    showing 0-0 (falling back via `c.get("score") or "0"`) while the clock
+    page kept advancing normally. The per-game summary endpoint has the
+    real score. Returns a full game_state dict, or None on any failure
+    (caller falls back to the team endpoint's own data in that case)."""
+    try:
+        resp = urequests.get(
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={}".format(
+                event_id
+            ),
+            timeout=10,
+        )
+    except Exception as e:
+        print("skol_display: summary request failed:", e)
+        return None
+
+    try:
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except Exception as e:
+        print("skol_display: bad summary response:", e)
+        return None
+    finally:
+        resp.close()
+
+    competitions = (data.get("header") or {}).get("competitions") or []
+    if not competitions:
+        return None
+    comp = competitions[0]
+    status = comp.get("status") or {}
+
+    scores = []
+    for c in comp.get("competitors") or []:
+        team = c.get("team") or {}
+        scores.append({
+            "abbr": team.get("abbreviation", "???"),
+            "score": c.get("score") or "0",
+        })
+
+    return {
+        "state": (status.get("type") or {}).get("state"),
+        "date": comp.get("date"),
+        "period": status.get("period"),
+        "clock": status.get("displayClock"),
+        "scores": scores,
+    }
+
+
 def fetch_game_state():
     """Returns a dict describing the Vikings' next/current game, or None if
     the request failed or there's no upcoming/live game data."""
@@ -318,13 +378,23 @@ def fetch_game_state():
     events = (data.get("team") or {}).get("nextEvent") or []
     if not events:
         return None
-    competitions = events[0].get("competitions") or []
+    event = events[0]
+    competitions = event.get("competitions") or []
     if not competitions:
         return None
     comp = competitions[0]
 
     status = comp.get("status") or {}
     state = (status.get("type") or {}).get("state")  # "pre" | "in" | "post"
+
+    if state == "in":
+        event_id = event.get("id")
+        if event_id:
+            live = _fetch_live_summary(event_id)
+            if live:
+                return live
+        # fall through to the team endpoint's own (score-unreliable) data
+        # if the summary fetch itself failed, rather than showing nothing
 
     scores = []
     for c in comp.get("competitors") or []:
@@ -336,7 +406,7 @@ def fetch_game_state():
 
     return {
         "state": state,
-        "date": events[0].get("date"),  # "2026-10-04T20:05Z" (UTC, kickoff)
+        "date": event.get("date"),  # "2026-10-04T20:05Z" (UTC, kickoff)
         "period": status.get("period"),
         "clock": status.get("displayClock"),
         "scores": scores,
